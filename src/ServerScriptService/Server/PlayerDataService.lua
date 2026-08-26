@@ -240,17 +240,20 @@ end
 
 --[[
 	Applies a task-completion reward to the currently-loaded record for
-	`userId`. This is the ONLY code path in Phase 1 that mutates
-	PersonalMoney/PerformanceRating/PerformanceHistory/TaskHistory -
-	TaskService computes the reward (from a server-side task definition,
-	never from client input) and hands it here so PlayerDataService stays
-	the single owner of PlayerData's field-level invariants (bounded
-	history lists, non-negative money), the same role it already plays
-	for schema validation elsewhere in this file.
+	`userId`. This is the ONLY code path that mutates PersonalMoney/
+	PerformanceRating/PerformanceHistory/Reputation/TaskHistory -
+	TaskService computes the reward (from server-side task/choice
+	definitions plus, where a choice has multiple weighted outcomes, a
+	server-generated roll - never from client input) and hands it here so
+	PlayerDataService stays the single owner of PlayerData's field-level
+	invariants (bounded history lists, non-negative money), the same role
+	it already plays for schema validation elsewhere in this file.
 
 	reward: {
 		MoneyGain = number,
 		PerformanceGain = number,
+		ReputationGain = number (optional, defaults to 0 - added in Phase 2;
+			omitting it preserves Phase 1 callers' exact prior behavior),
 		HistoryEntry = table,  -- appended to the bounded TaskHistory log
 	}
 
@@ -263,6 +266,10 @@ function PlayerDataService:ApplyTaskCompletion(userId, reward)
 	assert(type(reward) == "table", "reward must be a table")
 	assert(type(reward.MoneyGain) == "number", "reward.MoneyGain must be a number")
 	assert(type(reward.PerformanceGain) == "number", "reward.PerformanceGain must be a number")
+	assert(
+		reward.ReputationGain == nil or type(reward.ReputationGain) == "number",
+		"reward.ReputationGain must be a number when provided"
+	)
 
 	local session = self._sessions[userId]
 	if not session then
@@ -271,10 +278,12 @@ function PlayerDataService:ApplyTaskCompletion(userId, reward)
 
 	local record = session.record
 	local schema = self._schema
+	local reputationGain = reward.ReputationGain or 0
 
 	record.PersonalMoney = record.PersonalMoney + reward.MoneyGain
 	record.PerformanceRating = record.PerformanceRating + reward.PerformanceGain
 	record.PerformanceHistory = schema.AppendBounded(record.PerformanceHistory, reward.PerformanceGain)
+	record.Reputation = record.Reputation + reputationGain
 
 	if reward.HistoryEntry ~= nil then
 		record.TaskHistory = schema.AppendBounded(record.TaskHistory, reward.HistoryEntry)

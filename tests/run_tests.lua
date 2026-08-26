@@ -26,12 +26,15 @@ local testFiles = {
 	"tests/SeedOrganizations.test.lua",
 	"tests/DataStoreWrapper.test.lua",
 	"tests/OrganizationService.test.lua",
-	"tests/PlayerDataService.test.lua", -- also covers Phase 1's ApplyTaskCompletion additions
+	"tests/PlayerDataService.test.lua", -- also covers Phase 1/2's ApplyTaskCompletion additions
 	-- Phase 1
-	"tests/TaskDefinitions.test.lua",
-	"tests/TaskOutcome.test.lua",
 	"tests/TaskInstance.test.lua",
 	"tests/ActionRateLimiter.test.lua",
+	-- Phase 2 (TaskDefinitions/TaskOutcome cover Phase 2's Choices/decision shape)
+	"tests/WeightedOutcome.test.lua",
+	"tests/ChoicePreview.test.lua",
+	"tests/TaskDefinitions.test.lua",
+	"tests/TaskOutcome.test.lua",
 	"tests/TaskService.test.lua",
 }
 

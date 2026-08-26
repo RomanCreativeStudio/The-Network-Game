@@ -14,10 +14,10 @@
 	docs/technical-architecture-v0.1.md §18-§19). Keep this file thin;
 	real logic belongs in the modules it wires together, not here.
 
-	Phase 1 scope only. Deliberately does NOT implement: real proposal
-	mechanics, multiple task types, complex decisions, Influence spending,
-	Promotion, hiring/firing, Departments, Branches, Contracts, Founder
-	system, M&A, Courts, Governance, or Monetization. See
+	Phase 2 scope only. Deliberately does NOT implement: multiple task
+	types, Influence spending, Promotion, hiring/firing, Departments,
+	Branches, Contracts, Founder system, M&A, Courts, Governance,
+	political systems, mega-corporation systems, or Monetization. See
 	docs/mvp-definition-v0.1.md and docs/technical-architecture-v0.1.md.
 
 	SECURITY: every RemoteEvent handler below uses ONLY the `player`
@@ -41,6 +41,8 @@ local RetryPolicy = require(Shared.Logic.RetryPolicy)
 local SessionLock = require(Shared.Logic.SessionLock)
 local TaskInstance = require(Shared.Logic.TaskInstance)
 local TaskOutcome = require(Shared.Logic.TaskOutcome)
+local WeightedOutcome = require(Shared.Logic.WeightedOutcome)
+local ChoicePreview = require(Shared.Logic.ChoicePreview)
 local ActionRateLimiter = require(Shared.Logic.ActionRateLimiter)
 
 local DataStoreWrapper = require(script.Parent.DataStoreWrapper)
@@ -86,6 +88,8 @@ local taskService = TaskService.new({
 	taskDefinitions = TaskDefinitions,
 	taskInstance = TaskInstance,
 	taskOutcome = TaskOutcome,
+	weightedOutcome = WeightedOutcome,
+	choicePreview = ChoicePreview,
 	rateLimiter = ActionRateLimiter,
 	log = function(msg)
 		warn("[TaskService] " .. msg)
@@ -133,7 +137,7 @@ Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(onPlayerRemoving)
 
 --------------------------------------------------------------------------
--- Task pipeline Remotes (Phase 1)
+-- Task pipeline Remotes
 --------------------------------------------------------------------------
 
 local Remotes = Shared:WaitForChild("Remotes")
@@ -144,6 +148,10 @@ local TaskResultRemote = Remotes:WaitForChild("TaskResult")
 
 -- `player` is the Roblox-engine-verified sender; RequestTask takes no
 -- other arguments, so there is nothing here for a client to fabricate.
+-- The Choices array sent back is a READ-ONLY preview (built by
+-- ChoicePreview purely from server data) so the player can see what
+-- their options are and roughly what each is likely to cost/earn before
+-- deciding - the server never reads these numbers back from the client.
 RequestTaskRemote.OnServerEvent:Connect(function(player)
 	local ok, taskOrErr = taskService:RequestTask(player.UserId)
 	if ok then
@@ -152,30 +160,39 @@ RequestTaskRemote.OnServerEvent:Connect(function(player)
 			InstanceId = taskOrErr.InstanceId,
 			TaskId = taskOrErr.TaskId,
 			Name = taskOrErr.Name,
+			Prompt = taskOrErr.Prompt,
+			Choices = taskOrErr.Choices,
 		})
 	else
 		TaskAssignedRemote:FireClient(player, { Success = false, Reason = tostring(taskOrErr) })
 	end
 end)
 
--- taskId/instanceId are the only client-controllable inputs, and both
--- are opaque references validated entirely server-side by TaskService -
--- see its module-level SECURITY MODEL comment. Malformed argument types
--- are dropped here before ever reaching TaskService.
-CompleteTaskRemote.OnServerEvent:Connect(function(player, taskId, instanceId)
-	if type(taskId) ~= "string" or type(instanceId) ~= "string" then
+-- taskId/instanceId/choiceId are the ONLY client-controllable inputs,
+-- and all three are opaque references validated entirely server-side by
+-- TaskService - see its module-level SECURITY MODEL comment. No reward,
+-- performance, reputation, quality, or outcome value is ever accepted
+-- here. Malformed argument types are dropped here before ever reaching
+-- TaskService.
+CompleteTaskRemote.OnServerEvent:Connect(function(player, taskId, instanceId, choiceId)
+	if type(taskId) ~= "string" or type(instanceId) ~= "string" or type(choiceId) ~= "string" then
 		TaskResultRemote:FireClient(player, { Success = false, Reason = "malformed request" })
 		return
 	end
 
-	local ok, resultOrErr = taskService:CompleteTask(player.UserId, taskId, instanceId)
+	local ok, resultOrErr = taskService:CompleteTask(player.UserId, taskId, instanceId, choiceId)
 	if ok then
 		TaskResultRemote:FireClient(player, {
 			Success = true,
+			ChoiceId = resultOrErr.ChoiceId,
+			ResultLabel = resultOrErr.ResultLabel,
+			QualityScore = resultOrErr.QualityScore,
 			MoneyGain = resultOrErr.MoneyGain,
 			PerformanceGain = resultOrErr.PerformanceGain,
+			ReputationGain = resultOrErr.ReputationGain,
 			NewPersonalMoney = resultOrErr.NewPersonalMoney,
 			NewPerformanceRating = resultOrErr.NewPerformanceRating,
+			NewReputation = resultOrErr.NewReputation,
 		})
 	else
 		TaskResultRemote:FireClient(player, { Success = false, Reason = tostring(resultOrErr) })
