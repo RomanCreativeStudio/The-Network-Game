@@ -193,6 +193,81 @@ testkit.test("SavePlayer on a user with no active session fails safely", functio
 	testkit.assertNotNil(err)
 end)
 
+--------------------------------------------------------------------------
+-- ApplyTaskCompletion (added in Phase 1)
+--------------------------------------------------------------------------
+
+testkit.test("ApplyTaskCompletion adds to PersonalMoney/PerformanceRating and logs history", function()
+	local service = newHarness()
+	service:LoadPlayer(2001, SeedOrganizations.DEFAULT_ORG_ID)
+
+	local ok, record = service:ApplyTaskCompletion(2001, {
+		MoneyGain = 10,
+		PerformanceGain = 1,
+		HistoryEntry = { TaskId = "task-1", InstanceId = "inst-1" },
+	})
+
+	testkit.assertTrue(ok)
+	testkit.assertEqual(record.PersonalMoney, 10)
+	testkit.assertEqual(record.PerformanceRating, 1)
+	testkit.assertEqual(#record.TaskHistory, 1)
+	testkit.assertEqual(#record.PerformanceHistory, 1)
+end)
+
+testkit.test("ApplyTaskCompletion accumulates across multiple calls", function()
+	local service = newHarness()
+	service:LoadPlayer(2002, SeedOrganizations.DEFAULT_ORG_ID)
+
+	service:ApplyTaskCompletion(2002, { MoneyGain = 10, PerformanceGain = 1 })
+	service:ApplyTaskCompletion(2002, { MoneyGain = 10, PerformanceGain = 1 })
+
+	local record = service:GetLoadedRecord(2002)
+	testkit.assertEqual(record.PersonalMoney, 20)
+	testkit.assertEqual(record.PerformanceRating, 2)
+end)
+
+testkit.test("ApplyTaskCompletion fails safely with no active session", function()
+	local service = newHarness()
+	local ok, err = service:ApplyTaskCompletion(2003, { MoneyGain = 10, PerformanceGain = 1 })
+	testkit.assertFalse(ok)
+	testkit.assertNotNil(err)
+end)
+
+testkit.test("ApplyTaskCompletion respects the bounded history length", function()
+	local service = newHarness()
+	service:LoadPlayer(2004, SeedOrganizations.DEFAULT_ORG_ID)
+
+	for i = 1, PlayerDataSchema.MAX_HISTORY_LENGTH + 10 do
+		service:ApplyTaskCompletion(2004, {
+			MoneyGain = 1,
+			PerformanceGain = 1,
+			HistoryEntry = { seq = i },
+		})
+	end
+
+	local record = service:GetLoadedRecord(2004)
+	testkit.assertEqual(#record.TaskHistory, PlayerDataSchema.MAX_HISTORY_LENGTH)
+	testkit.assertEqual(#record.PerformanceHistory, PlayerDataSchema.MAX_HISTORY_LENGTH)
+	-- Money/Performance still accumulate correctly even once history truncates.
+	testkit.assertEqual(record.PersonalMoney, PlayerDataSchema.MAX_HISTORY_LENGTH + 10)
+end)
+
+testkit.test("a reward applied via ApplyTaskCompletion survives leave -> rejoin", function()
+	local playerStore = FakeDataStore.new()
+	local orgStore = FakeDataStore.new()
+	local service = newHarness(playerStore, orgStore)
+
+	service:LoadPlayer(2005, SeedOrganizations.DEFAULT_ORG_ID)
+	service:ApplyTaskCompletion(2005, { MoneyGain = 25, PerformanceGain = 3 })
+	service:SavePlayer(2005, { release = true })
+
+	local secondService = newHarness(playerStore, orgStore)
+	local ok, session = secondService:LoadPlayer(2005, SeedOrganizations.DEFAULT_ORG_ID)
+	testkit.assertTrue(ok, tostring(session))
+	testkit.assertEqual(session.record.PersonalMoney, 25)
+	testkit.assertEqual(session.record.PerformanceRating, 3)
+end)
+
 testkit.test("clients cannot mutate persistent state: no client-facing entry point exists", function()
 	-- Phase 0 intentionally exposes no RemoteEvent/RemoteFunction (see
 	-- Bootstrap.server.lua), and PlayerDataService's public surface only

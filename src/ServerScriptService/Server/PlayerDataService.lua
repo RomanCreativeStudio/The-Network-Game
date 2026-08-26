@@ -238,6 +238,51 @@ function PlayerDataService:SavePlayer(userId, opts)
 	return true
 end
 
+--[[
+	Applies a task-completion reward to the currently-loaded record for
+	`userId`. This is the ONLY code path in Phase 1 that mutates
+	PersonalMoney/PerformanceRating/PerformanceHistory/TaskHistory -
+	TaskService computes the reward (from a server-side task definition,
+	never from client input) and hands it here so PlayerDataService stays
+	the single owner of PlayerData's field-level invariants (bounded
+	history lists, non-negative money), the same role it already plays
+	for schema validation elsewhere in this file.
+
+	reward: {
+		MoneyGain = number,
+		PerformanceGain = number,
+		HistoryEntry = table,  -- appended to the bounded TaskHistory log
+	}
+
+	Returns (true, updatedRecord) on success, or (false, errorMessage) if
+	the player has no active session. Does not persist to DataStore by
+	itself - the caller (or the periodic autosave loop) is responsible
+	for calling SavePlayer/SaveAll afterward.
+]]
+function PlayerDataService:ApplyTaskCompletion(userId, reward)
+	assert(type(reward) == "table", "reward must be a table")
+	assert(type(reward.MoneyGain) == "number", "reward.MoneyGain must be a number")
+	assert(type(reward.PerformanceGain) == "number", "reward.PerformanceGain must be a number")
+
+	local session = self._sessions[userId]
+	if not session then
+		return false, "no active session for user"
+	end
+
+	local record = session.record
+	local schema = self._schema
+
+	record.PersonalMoney = record.PersonalMoney + reward.MoneyGain
+	record.PerformanceRating = record.PerformanceRating + reward.PerformanceGain
+	record.PerformanceHistory = schema.AppendBounded(record.PerformanceHistory, reward.PerformanceGain)
+
+	if reward.HistoryEntry ~= nil then
+		record.TaskHistory = schema.AppendBounded(record.TaskHistory, reward.HistoryEntry)
+	end
+
+	return true, record
+end
+
 -- Returns the in-memory PlayerData record for a currently-loaded session,
 -- or nil if the player has no active session on this server.
 function PlayerDataService:GetLoadedRecord(userId)

@@ -18,6 +18,7 @@
 _G.testkit = dofile("tests/testkit.lua")
 
 local testFiles = {
+	-- Phase 0
 	"tests/PlayerData.test.lua",
 	"tests/OrganizationData.test.lua",
 	"tests/RetryPolicy.test.lua",
@@ -25,7 +26,13 @@ local testFiles = {
 	"tests/SeedOrganizations.test.lua",
 	"tests/DataStoreWrapper.test.lua",
 	"tests/OrganizationService.test.lua",
-	"tests/PlayerDataService.test.lua",
+	"tests/PlayerDataService.test.lua", -- also covers Phase 1's ApplyTaskCompletion additions
+	-- Phase 1
+	"tests/TaskDefinitions.test.lua",
+	"tests/TaskOutcome.test.lua",
+	"tests/TaskInstance.test.lua",
+	"tests/ActionRateLimiter.test.lua",
+	"tests/TaskService.test.lua",
 }
 
 for _, file in ipairs(testFiles) do

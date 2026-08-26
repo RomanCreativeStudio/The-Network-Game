@@ -1,0 +1,53 @@
+local testkit = _G.testkit or dofile("tests/testkit.lua")
+local TaskInstance = dofile("src/ReplicatedStorage/Shared/Logic/TaskInstance.lua")
+
+testkit.suite("TaskInstance")
+
+testkit.test("New creates a pending instance", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000)
+	testkit.assertEqual(instance.TaskId, "task-1")
+	testkit.assertEqual(instance.InstanceId, "inst-1")
+	testkit.assertEqual(instance.Completed, false)
+	testkit.assertNil(instance.CompletedAt)
+end)
+
+testkit.test("ValidateCompletion allows a fresh, matching instance", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000)
+	local ok = TaskInstance.ValidateCompletion(instance, "task-1")
+	testkit.assertTrue(ok)
+end)
+
+testkit.test("ValidateCompletion rejects a nil instance (no task received / wrong player)", function()
+	local ok, reason = TaskInstance.ValidateCompletion(nil, "task-1")
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "unknown task instance")
+end)
+
+testkit.test("ValidateCompletion rejects a mismatched (fabricated) task id", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000)
+	local ok, reason = TaskInstance.ValidateCompletion(instance, "task-2-fabricated")
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "task id mismatch")
+end)
+
+testkit.test("ValidateCompletion rejects an already-completed instance (duplicate/replay)", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000)
+	local completed = TaskInstance.MarkCompleted(instance, 1005)
+	local ok, reason = TaskInstance.ValidateCompletion(completed, "task-1")
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "task already completed")
+end)
+
+testkit.test("ValidateCompletion rejects an unrecognized instance shape", function()
+	local ok, reason = TaskInstance.ValidateCompletion({ garbage = true }, "task-1")
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "unrecognized task instance shape")
+end)
+
+testkit.test("MarkCompleted does not mutate the original instance", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000)
+	local completed = TaskInstance.MarkCompleted(instance, 1005)
+	testkit.assertFalse(instance.Completed) -- original untouched
+	testkit.assertTrue(completed.Completed)
+	testkit.assertEqual(completed.CompletedAt, 1005)
+end)

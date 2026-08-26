@@ -5,13 +5,29 @@
 		"ReplicatedStorage": {
 			"$className": "ReplicatedStorage",
 			"Shared": {
-				"$path": "src/ReplicatedStorage/Shared"
+				"$path": "src/ReplicatedStorage/Shared",
+				"Remotes": {
+					"$className": "Folder",
+					"RequestTask": { "$className": "RemoteEvent" },
+					"TaskAssigned": { "$className": "RemoteEvent" },
+					"CompleteTask": { "$className": "RemoteEvent" },
+					"TaskResult": { "$className": "RemoteEvent" }
+				}
 			}
 		},
 		"ServerScriptService": {
 			"$className": "ServerScriptService",
 			"Server": {
 				"$path": "src/ServerScriptService/Server"
+			}
+		},
+		"StarterPlayer": {
+			"$className": "StarterPlayer",
+			"StarterPlayerScripts": {
+				"$className": "StarterPlayerScripts",
+				"Client": {
+					"$path": "src/StarterPlayerScripts/Client"
+				}
 			}
 		}
 	}
