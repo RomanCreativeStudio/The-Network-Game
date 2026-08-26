@@ -292,6 +292,32 @@ function PlayerDataService:ApplyTaskCompletion(userId, reward)
 	return true, record
 end
 
+--[[
+	Applies a rank change to the currently-loaded record for `userId`.
+	This is the ONLY code path that mutates Rank - PromotionService
+	computes eligibility (from server-held Performance/Reputation via
+	GetLoadedRecord, never from client input) and hands the resulting
+	rank here, so PlayerDataService stays the single owner of PlayerData's
+	field-level mutations, the same role it already plays for Money/
+	Performance/Reputation via ApplyTaskCompletion.
+
+	Returns (true, updatedRecord) on success, or (false, errorMessage) if
+	the player has no active session. Does not persist to DataStore by
+	itself - the caller (or the periodic autosave loop) is responsible
+	for calling SavePlayer/SaveAll afterward, same as ApplyTaskCompletion.
+]]
+function PlayerDataService:ApplyPromotion(userId, newRank)
+	assert(type(newRank) == "string" and #newRank > 0, "newRank must be a non-empty string")
+
+	local session = self._sessions[userId]
+	if not session then
+		return false, "no active session for user"
+	end
+
+	session.record.Rank = newRank
+	return true, session.record
+end
+
 -- Returns the in-memory PlayerData record for a currently-loaded session,
 -- or nil if the player has no active session on this server.
 function PlayerDataService:GetLoadedRecord(userId)

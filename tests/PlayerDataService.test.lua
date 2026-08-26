@@ -268,6 +268,49 @@ testkit.test("a reward applied via ApplyTaskCompletion survives leave -> rejoin"
 	testkit.assertEqual(session.record.PerformanceRating, 3)
 end)
 
+--------------------------------------------------------------------------
+-- ApplyPromotion (added in Phase 3)
+--------------------------------------------------------------------------
+
+testkit.test("ApplyPromotion changes Rank on the loaded record", function()
+	local service = newHarness()
+	service:LoadPlayer(3001, SeedOrganizations.DEFAULT_ORG_ID)
+
+	local ok, record = service:ApplyPromotion(3001, PlayerDataSchema.RANK.MANAGER)
+	testkit.assertTrue(ok)
+	testkit.assertEqual(record.Rank, PlayerDataSchema.RANK.MANAGER)
+	testkit.assertEqual(service:GetLoadedRecord(3001).Rank, PlayerDataSchema.RANK.MANAGER)
+end)
+
+testkit.test("ApplyPromotion fails safely with no active session", function()
+	local service = newHarness()
+	local ok, err = service:ApplyPromotion(3002, PlayerDataSchema.RANK.MANAGER)
+	testkit.assertFalse(ok)
+	testkit.assertNotNil(err)
+end)
+
+testkit.test("ApplyPromotion rejects an empty rank string", function()
+	local service = newHarness()
+	service:LoadPlayer(3003, SeedOrganizations.DEFAULT_ORG_ID)
+	local ok = pcall(service.ApplyPromotion, service, 3003, "")
+	testkit.assertFalse(ok)
+end)
+
+testkit.test("a promotion applied via ApplyPromotion survives leave -> rejoin", function()
+	local playerStore = FakeDataStore.new()
+	local orgStore = FakeDataStore.new()
+	local service = newHarness(playerStore, orgStore)
+
+	service:LoadPlayer(3004, SeedOrganizations.DEFAULT_ORG_ID)
+	service:ApplyPromotion(3004, PlayerDataSchema.RANK.MANAGER)
+	service:SavePlayer(3004, { release = true })
+
+	local secondService = newHarness(playerStore, orgStore)
+	local ok, session = secondService:LoadPlayer(3004, SeedOrganizations.DEFAULT_ORG_ID)
+	testkit.assertTrue(ok, tostring(session))
+	testkit.assertEqual(session.record.Rank, PlayerDataSchema.RANK.MANAGER)
+end)
+
 testkit.test("clients cannot mutate persistent state: no client-facing entry point exists", function()
 	-- Phase 0 intentionally exposes no RemoteEvent/RemoteFunction (see
 	-- Bootstrap.server.lua), and PlayerDataService's public surface only

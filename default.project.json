@@ -11,7 +11,10 @@
 					"RequestTask": { "$className": "RemoteEvent" },
 					"TaskAssigned": { "$className": "RemoteEvent" },
 					"CompleteTask": { "$className": "RemoteEvent" },
-					"TaskResult": { "$className": "RemoteEvent" }
+					"TaskResult": { "$className": "RemoteEvent" },
+					"AssignTask": { "$className": "RemoteEvent" },
+					"AssignTaskResult": { "$className": "RemoteEvent" },
+					"PromotionNotice": { "$className": "RemoteEvent" }
 				}
 			}
 		},

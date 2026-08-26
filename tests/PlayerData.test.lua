@@ -9,6 +9,18 @@ testkit.test("CreateDefault produces a valid record", function()
 	testkit.assertTrue(valid, "expected valid default record, got: " .. tostring(reason))
 end)
 
+testkit.test("RANK defines both Associate and Manager (Phase 3)", function()
+	testkit.assertEqual(PlayerDataSchema.RANK.ASSOCIATE, "Associate")
+	testkit.assertEqual(PlayerDataSchema.RANK.MANAGER, "Manager")
+end)
+
+testkit.test("Validate accepts a record with Rank = Manager", function()
+	local record = PlayerDataSchema.CreateDefault(1, "org-1")
+	record.Rank = PlayerDataSchema.RANK.MANAGER
+	local valid, reason = PlayerDataSchema.Validate(record)
+	testkit.assertTrue(valid, tostring(reason))
+end)
+
 testkit.test("CreateDefault sets safe defaults", function()
 	local record = PlayerDataSchema.CreateDefault(12345, "org-1")
 	testkit.assertEqual(record.UserId, 12345)

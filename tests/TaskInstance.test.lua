@@ -11,6 +11,27 @@ testkit.test("New creates a pending instance", function()
 	testkit.assertNil(instance.CompletedAt)
 end)
 
+testkit.test("New defaults AssignedBy to nil for a self-requested instance (no 4th argument)", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000)
+	testkit.assertNil(instance.AssignedBy)
+end)
+
+testkit.test("New records AssignedBy when a Manager assigns the instance", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000, 555)
+	testkit.assertEqual(instance.AssignedBy, 555)
+end)
+
+testkit.test("New rejects a non-numeric assignedBy", function()
+	local ok = pcall(TaskInstance.New, "task-1", "inst-1", 1000, "not-a-userid")
+	testkit.assertFalse(ok)
+end)
+
+testkit.test("MarkCompleted preserves AssignedBy through completion", function()
+	local instance = TaskInstance.New("task-1", "inst-1", 1000, 555)
+	local completed = TaskInstance.MarkCompleted(instance, 1005)
+	testkit.assertEqual(completed.AssignedBy, 555)
+end)
+
 testkit.test("ValidateCompletion allows a fresh, matching instance", function()
 	local instance = TaskInstance.New("task-1", "inst-1", 1000)
 	local ok = TaskInstance.ValidateCompletion(instance, "task-1")

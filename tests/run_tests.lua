@@ -35,6 +35,10 @@ local testFiles = {
 	"tests/ChoicePreview.test.lua",
 	"tests/TaskDefinitions.test.lua",
 	"tests/TaskOutcome.test.lua",
+	-- Phase 3
+	"tests/PromotionConfig.test.lua",
+	"tests/PromotionRules.test.lua",
+	"tests/PromotionService.test.lua",
 	"tests/TaskService.test.lua",
 }
 

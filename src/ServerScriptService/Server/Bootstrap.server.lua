@@ -14,11 +14,11 @@
 	docs/technical-architecture-v0.1.md §18-§19). Keep this file thin;
 	real logic belongs in the modules it wires together, not here.
 
-	Phase 2 scope only. Deliberately does NOT implement: multiple task
-	types, Influence spending, Promotion, hiring/firing, Departments,
-	Branches, Contracts, Founder system, M&A, Courts, Governance,
-	political systems, mega-corporation systems, or Monetization. See
-	docs/mvp-definition-v0.1.md and docs/technical-architecture-v0.1.md.
+	Phase 3 scope only. Deliberately does NOT implement: Director/VP/
+	Chief/Executive/CEO/Founder, Departments, Branches, hiring/firing,
+	Contracts, Governance, Board, M&A, Courts, political systems, mega-
+	corporation systems, or Monetization. See docs/mvp-definition-v0.1.md
+	and docs/technical-architecture-v0.1.md.
 
 	SECURITY: every RemoteEvent handler below uses ONLY the `player`
 	argument Roblox itself supplies (the true, engine-verified sender of
@@ -37,6 +37,7 @@ local PlayerDataSchema = require(Shared.Types.PlayerData)
 local OrganizationDataSchema = require(Shared.Types.OrganizationData)
 local SeedOrganizations = require(Shared.Data.SeedOrganizations)
 local TaskDefinitions = require(Shared.Data.TaskDefinitions)
+local PromotionConfig = require(Shared.Data.PromotionConfig)
 local RetryPolicy = require(Shared.Logic.RetryPolicy)
 local SessionLock = require(Shared.Logic.SessionLock)
 local TaskInstance = require(Shared.Logic.TaskInstance)
@@ -44,10 +45,12 @@ local TaskOutcome = require(Shared.Logic.TaskOutcome)
 local WeightedOutcome = require(Shared.Logic.WeightedOutcome)
 local ChoicePreview = require(Shared.Logic.ChoicePreview)
 local ActionRateLimiter = require(Shared.Logic.ActionRateLimiter)
+local PromotionRules = require(Shared.Logic.PromotionRules)
 
 local DataStoreWrapper = require(script.Parent.DataStoreWrapper)
 local OrganizationService = require(script.Parent.OrganizationService)
 local PlayerDataService = require(script.Parent.PlayerDataService)
+local PromotionService = require(script.Parent.PromotionService)
 local TaskService = require(script.Parent.TaskService)
 
 local wrapper = DataStoreWrapper.new({
@@ -83,6 +86,19 @@ local playerDataService = PlayerDataService.new({
 	end,
 })
 
+-- PLAYTEST CALIBRATION values (Phase 3A) - see
+-- Shared/Data/PromotionConfig.lua for the full rationale and the
+-- explicit "not locked" caveat.
+local promotionService = PromotionService.new({
+	playerDataService = playerDataService,
+	promotionRules = PromotionRules,
+	promotionConfig = PromotionConfig.ASSOCIATE_TO_MANAGER,
+	schema = PlayerDataSchema,
+	log = function(msg)
+		warn("[PromotionService] " .. msg)
+	end,
+})
+
 local taskService = TaskService.new({
 	playerDataService = playerDataService,
 	taskDefinitions = TaskDefinitions,
@@ -91,6 +107,8 @@ local taskService = TaskService.new({
 	weightedOutcome = WeightedOutcome,
 	choicePreview = ChoicePreview,
 	rateLimiter = ActionRateLimiter,
+	schema = PlayerDataSchema,
+	promotionService = promotionService,
 	log = function(msg)
 		warn("[TaskService] " .. msg)
 	end,
@@ -145,6 +163,9 @@ local RequestTaskRemote = Remotes:WaitForChild("RequestTask")
 local TaskAssignedRemote = Remotes:WaitForChild("TaskAssigned")
 local CompleteTaskRemote = Remotes:WaitForChild("CompleteTask")
 local TaskResultRemote = Remotes:WaitForChild("TaskResult")
+local AssignTaskRemote = Remotes:WaitForChild("AssignTask")
+local AssignTaskResultRemote = Remotes:WaitForChild("AssignTaskResult")
+local PromotionNoticeRemote = Remotes:WaitForChild("PromotionNotice")
 
 -- `player` is the Roblox-engine-verified sender; RequestTask takes no
 -- other arguments, so there is nothing here for a client to fabricate.
@@ -171,9 +192,9 @@ end)
 -- taskId/instanceId/choiceId are the ONLY client-controllable inputs,
 -- and all three are opaque references validated entirely server-side by
 -- TaskService - see its module-level SECURITY MODEL comment. No reward,
--- performance, reputation, quality, or outcome value is ever accepted
--- here. Malformed argument types are dropped here before ever reaching
--- TaskService.
+-- performance, reputation, quality, rank, or promotion-eligibility value
+-- is ever accepted here. Malformed argument types are dropped here
+-- before ever reaching TaskService.
 CompleteTaskRemote.OnServerEvent:Connect(function(player, taskId, instanceId, choiceId)
 	if type(taskId) ~= "string" or type(instanceId) ~= "string" or type(choiceId) ~= "string" then
 		TaskResultRemote:FireClient(player, { Success = false, Reason = "malformed request" })
@@ -193,9 +214,81 @@ CompleteTaskRemote.OnServerEvent:Connect(function(player, taskId, instanceId, ch
 			NewPersonalMoney = resultOrErr.NewPersonalMoney,
 			NewPerformanceRating = resultOrErr.NewPerformanceRating,
 			NewReputation = resultOrErr.NewReputation,
+			-- Phase 3 "clear player-facing explanation": always present,
+			-- regardless of whether a promotion happened this call.
+			Rank = resultOrErr.Rank,
+			PerformanceThreshold = resultOrErr.PerformanceThreshold,
+			ReputationThreshold = resultOrErr.ReputationThreshold,
+			PromotionEligible = resultOrErr.PromotionEligible,
 		})
+
+		-- Fired only when CheckAndPromote (inside CompleteTask) actually
+		-- just granted a promotion - a distinct celebratory event from
+		-- the ongoing status fields above. Never triggered by, or in
+		-- response to, anything the client sent.
+		if resultOrErr.Promotion then
+			PromotionNoticeRemote:FireClient(player, {
+				PreviousRank = resultOrErr.Promotion.PreviousRank,
+				NewRank = resultOrErr.Promotion.NewRank,
+				PerformanceRating = resultOrErr.Promotion.PerformanceRating,
+				Reputation = resultOrErr.Promotion.Reputation,
+				PerformanceThreshold = resultOrErr.Promotion.PerformanceThreshold,
+				ReputationThreshold = resultOrErr.Promotion.ReputationThreshold,
+				Unlocked = resultOrErr.Promotion.Unlocked,
+			})
+		end
 	else
 		TaskResultRemote:FireClient(player, { Success = false, Reason = tostring(resultOrErr) })
+	end
+end)
+
+--------------------------------------------------------------------------
+-- Manager responsibility: assigning the existing task to another player
+-- (Phase 3). Extends the same TaskService/instance machinery above -
+-- see TaskService.lua's AssignTask for the full authorization chain
+-- (never trusts the client's claim about its own rank or the target's
+-- eligibility; both are re-read from PlayerDataService on every call).
+--------------------------------------------------------------------------
+
+-- targetUserId is the only client-controllable input; `player` (the
+-- assigning Manager) is, as always, the engine-verified Remote sender.
+AssignTaskRemote.OnServerEvent:Connect(function(player, targetUserId)
+	if type(targetUserId) ~= "number" then
+		AssignTaskResultRemote:FireClient(player, { Success = false, Reason = "malformed request" })
+		return
+	end
+
+	local ok, resultOrErr = taskService:AssignTask(player.UserId, targetUserId)
+	if not ok then
+		AssignTaskResultRemote:FireClient(player, { Success = false, Reason = tostring(resultOrErr) })
+		return
+	end
+
+	-- Manager feedback: confirms the assignment succeeded.
+	AssignTaskResultRemote:FireClient(player, {
+		Success = true,
+		TargetUserId = resultOrErr.TargetUserId,
+		TaskName = resultOrErr.Name,
+	})
+
+	-- Recipient notification: reuses the same TaskAssigned event a
+	-- self-request would fire, with AssignedBy fields added so the
+	-- client can distinguish "I asked for this" from "I was assigned
+	-- this." If the target disconnected between AssignTask succeeding
+	-- and here (should not happen in practice - AssignTask itself
+	-- requires an active session), this is a no-op rather than an error.
+	local targetPlayer = Players:GetPlayerByUserId(targetUserId)
+	if targetPlayer then
+		TaskAssignedRemote:FireClient(targetPlayer, {
+			Success = true,
+			InstanceId = resultOrErr.InstanceId,
+			TaskId = resultOrErr.TaskId,
+			Name = resultOrErr.Name,
+			Prompt = resultOrErr.Prompt,
+			Choices = resultOrErr.Choices,
+			AssignedByUserId = resultOrErr.AssignedBy,
+			AssignedByName = player.Name,
+		})
 	end
 end)
 

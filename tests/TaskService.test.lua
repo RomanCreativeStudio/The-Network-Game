@@ -18,6 +18,8 @@ local TaskInstance = dofile("src/ReplicatedStorage/Shared/Logic/TaskInstance.lua
 local TaskOutcome = dofile("src/ReplicatedStorage/Shared/Logic/TaskOutcome.lua")
 local WeightedOutcome = dofile("src/ReplicatedStorage/Shared/Logic/WeightedOutcome.lua")
 local ChoicePreview = dofile("src/ReplicatedStorage/Shared/Logic/ChoicePreview.lua")
+local PromotionRules = dofile("src/ReplicatedStorage/Shared/Logic/PromotionRules.lua")
+local PromotionConfig = dofile("src/ReplicatedStorage/Shared/Data/PromotionConfig.lua")
 local PlayerDataSchema = dofile("src/ReplicatedStorage/Shared/Types/PlayerData.lua")
 local OrganizationDataSchema = dofile("src/ReplicatedStorage/Shared/Types/OrganizationData.lua")
 local SeedOrganizations = dofile("src/ReplicatedStorage/Shared/Data/SeedOrganizations.lua")
@@ -25,8 +27,11 @@ local TaskDefinitions = dofile("src/ReplicatedStorage/Shared/Data/TaskDefinition
 local DataStoreWrapper = dofile("src/ServerScriptService/Server/DataStoreWrapper.lua")
 local OrganizationService = dofile("src/ServerScriptService/Server/OrganizationService.lua")
 local PlayerDataService = dofile("src/ServerScriptService/Server/PlayerDataService.lua")
+local PromotionService = dofile("src/ServerScriptService/Server/PromotionService.lua")
 local TaskService = dofile("src/ServerScriptService/Server/TaskService.lua")
 local FakeDataStore = dofile("tests/fakes/FakeDataStore.lua")
+
+local PROMOTION_CONFIG = PromotionConfig.ASSOCIATE_TO_MANAGER -- PLAYTEST CALIBRATION
 
 testkit.suite("TaskService (integration)")
 
@@ -111,6 +116,12 @@ local function newHarness(options)
 		jobId = "server-a",
 		now = nowFn,
 	})
+	local promotionService = PromotionService.new({
+		playerDataService = playerDataService,
+		promotionRules = PromotionRules,
+		promotionConfig = PROMOTION_CONFIG,
+		schema = PlayerDataSchema,
+	})
 	local taskService = TaskService.new({
 		playerDataService = playerDataService,
 		taskDefinitions = TaskDefinitions,
@@ -119,12 +130,14 @@ local function newHarness(options)
 		weightedOutcome = WeightedOutcome,
 		choicePreview = ChoicePreview,
 		rateLimiter = ActionRateLimiter,
+		schema = PlayerDataSchema,
+		promotionService = promotionService,
 		now = nowFn,
 		clock = clockFn,
 		random = randomFn,
 	})
 
-	return taskService, playerDataService, t
+	return taskService, playerDataService, t, promotionService
 end
 
 local function advance(t, seconds)
@@ -518,4 +531,269 @@ testkit.test("completed instances beyond the tracked cap are pruned, pending one
 	end
 
 	testkit.assertTrue(taskService:_instanceCount(1003) <= TaskService.MAX_TRACKED_INSTANCES_PER_PLAYER)
+end)
+
+--------------------------------------------------------------------------
+-- PHASE 3: promotion as a side effect of CompleteTask
+--------------------------------------------------------------------------
+
+testkit.test("PROMOTION: crossing both thresholds on completion triggers promotion automatically", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(2001, SeedOrganizations.DEFAULT_ORG_ID)
+	-- Pre-seed to one "careful" task away from both thresholds.
+	playerDataService:ApplyTaskCompletion(2001, {
+		MoneyGain = 0,
+		PerformanceGain = PROMOTION_CONFIG.PerformanceThreshold - 2,
+		ReputationGain = PROMOTION_CONFIG.ReputationThreshold - 1,
+	})
+
+	local _ok, task = taskService:RequestTask(2001)
+	local compOk, result = taskService:CompleteTask(2001, task.TaskId, task.InstanceId, "careful")
+
+	testkit.assertTrue(compOk, tostring(result))
+	testkit.assertNotNil(result.Promotion, "expected a Promotion to have been granted this completion")
+	testkit.assertEqual(result.Promotion.NewRank, PlayerDataSchema.RANK.MANAGER)
+	testkit.assertEqual(result.Rank, PlayerDataSchema.RANK.MANAGER)
+	testkit.assertEqual(playerDataService:GetLoadedRecord(2001).Rank, PlayerDataSchema.RANK.MANAGER)
+end)
+
+testkit.test("PROMOTION: a completion that does not cross both thresholds carries no Promotion field", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(2002, SeedOrganizations.DEFAULT_ORG_ID)
+
+	local _ok, task = taskService:RequestTask(2002)
+	local compOk, result = taskService:CompleteTask(2002, task.TaskId, task.InstanceId, "careful")
+
+	testkit.assertTrue(compOk, tostring(result))
+	testkit.assertNil(result.Promotion)
+	testkit.assertEqual(result.Rank, PlayerDataSchema.RANK.ASSOCIATE)
+	testkit.assertTrue(type(result.PerformanceThreshold) == "number")
+	testkit.assertTrue(type(result.ReputationThreshold) == "number")
+	testkit.assertTrue(type(result.PromotionEligible) == "boolean")
+end)
+
+testkit.test("PROMOTION: every CompleteTask result explains current rank/thresholds/eligibility", function()
+	-- Phase 3 "clear player-facing explanation" requirement.
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(2003, SeedOrganizations.DEFAULT_ORG_ID)
+	local _ok, task = taskService:RequestTask(2003)
+	local _compOk, result = taskService:CompleteTask(2003, task.TaskId, task.InstanceId, "quick")
+
+	testkit.assertEqual(result.Rank, PlayerDataSchema.RANK.ASSOCIATE)
+	testkit.assertEqual(result.PerformanceThreshold, PROMOTION_CONFIG.PerformanceThreshold)
+	testkit.assertEqual(result.ReputationThreshold, PROMOTION_CONFIG.ReputationThreshold)
+	testkit.assertEqual(result.PromotionEligible, false)
+end)
+
+testkit.test("PROMOTION: an already-Manager player completing more tasks never gets a duplicate Promotion field", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(2004, SeedOrganizations.DEFAULT_ORG_ID)
+	playerDataService:ApplyPromotion(2004, PlayerDataSchema.RANK.MANAGER) -- already promoted
+
+	local _ok, task = taskService:RequestTask(2004)
+	local compOk, result = taskService:CompleteTask(2004, task.TaskId, task.InstanceId, "careful")
+
+	testkit.assertTrue(compOk, tostring(result))
+	testkit.assertNil(result.Promotion)
+	testkit.assertEqual(result.Rank, PlayerDataSchema.RANK.MANAGER)
+end)
+
+testkit.test("SECURITY: fabricated extra arguments to CompleteTask cannot force or fake a promotion", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(2005, SeedOrganizations.DEFAULT_ORG_ID)
+	local _ok, task = taskService:RequestTask(2005)
+
+	local compOk, result = taskService:CompleteTask(
+		2005,
+		task.TaskId,
+		task.InstanceId,
+		"careful",
+		PlayerDataSchema.RANK.MANAGER, -- fabricated "desired rank"
+		true -- fabricated "PromotionEligible"
+	)
+
+	testkit.assertTrue(compOk, tostring(result))
+	testkit.assertNil(result.Promotion)
+	testkit.assertEqual(result.Rank, PlayerDataSchema.RANK.ASSOCIATE)
+	testkit.assertEqual(playerDataService:GetLoadedRecord(2005).Rank, PlayerDataSchema.RANK.ASSOCIATE)
+end)
+
+--------------------------------------------------------------------------
+-- PHASE 3: Manager responsibility - AssignTask
+--------------------------------------------------------------------------
+
+-- Test-setup convenience only (not testing promotion logic here) -
+-- directly applies the rank change the same way a real promotion would,
+-- via the same PlayerDataService method PromotionService itself uses.
+local function promoteToManager(playerDataService, userId)
+	local ok = playerDataService:ApplyPromotion(userId, PlayerDataSchema.RANK.MANAGER)
+	assert(ok, "test setup: promoteToManager failed")
+end
+
+testkit.test("ASSIGN SUCCESS: a Manager assigns the task to an eligible Associate", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3001, SeedOrganizations.DEFAULT_ORG_ID) -- manager
+	playerDataService:LoadPlayer(3002, SeedOrganizations.DEFAULT_ORG_ID) -- associate
+	promoteToManager(playerDataService, 3001)
+
+	local ok, result = taskService:AssignTask(3001, 3002)
+	testkit.assertTrue(ok, tostring(result))
+	testkit.assertEqual(result.TargetUserId, 3002)
+	testkit.assertEqual(result.AssignedBy, 3001)
+	testkit.assertEqual(result.TaskId, TaskDefinitions.DEFAULT_TASK_ID)
+	testkit.assertTrue(type(result.Choices) == "table")
+end)
+
+testkit.test("ASSIGN SUCCESS: the assigned instance can be completed by the target via the normal flow", function()
+	-- "Do not create a second task system" - completion reuses
+	-- CompleteTask exactly as a self-requested task would.
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3003, SeedOrganizations.DEFAULT_ORG_ID) -- manager
+	playerDataService:LoadPlayer(3004, SeedOrganizations.DEFAULT_ORG_ID) -- associate
+	promoteToManager(playerDataService, 3003)
+
+	local _ok, assignment = taskService:AssignTask(3003, 3004)
+	local compOk, result = taskService:CompleteTask(3004, assignment.TaskId, assignment.InstanceId, "careful")
+	testkit.assertTrue(compOk, tostring(result))
+
+	local record = playerDataService:GetLoadedRecord(3004)
+	testkit.assertTrue(record.PersonalMoney > 0)
+end)
+
+testkit.test("ASSIGN SUCCESS: Manager retains the ability to perform tasks themselves", function()
+	-- Design principle: "I perform tasks AND I can now give responsibility
+	-- to someone else" - Manager does not LOSE the Associate capability.
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3005, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3005)
+
+	local reqOk, task = taskService:RequestTask(3005)
+	testkit.assertTrue(reqOk, tostring(task))
+	local compOk, result = taskService:CompleteTask(3005, task.TaskId, task.InstanceId, "careful")
+	testkit.assertTrue(compOk, tostring(result))
+end)
+
+testkit.test("SECURITY: an Associate attempting to assign a task is rejected", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3006, SeedOrganizations.DEFAULT_ORG_ID) -- still an Associate
+	playerDataService:LoadPlayer(3007, SeedOrganizations.DEFAULT_ORG_ID)
+
+	local ok, reason = taskService:AssignTask(3006, 3007)
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "only a Manager may assign tasks")
+end)
+
+testkit.test("SECURITY: a Manager assigning to themselves is rejected", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3008, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3008)
+
+	local ok, reason = taskService:AssignTask(3008, 3008)
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "cannot assign a task to yourself")
+end)
+
+testkit.test("SECURITY: assigning to a nonexistent/offline player is rejected", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3009, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3009)
+
+	-- 999999 never joined - no active session, indistinguishable here
+	-- from "nonexistent" vs. "offline", by design (see AssignTask docs).
+	local ok, reason = taskService:AssignTask(3009, 999999)
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "target player is not available")
+end)
+
+testkit.test("SECURITY: assigning to another Manager (ineligible rank) is rejected", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3010, SeedOrganizations.DEFAULT_ORG_ID)
+	playerDataService:LoadPlayer(3011, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3010)
+	promoteToManager(playerDataService, 3011) -- also a Manager
+
+	local ok, reason = taskService:AssignTask(3010, 3011)
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "target player is not an eligible Associate")
+end)
+
+testkit.test("SECURITY: assigning to an Associate in a different organization is rejected", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3012, SeedOrganizations.DEFAULT_ORG_ID)
+	playerDataService:LoadPlayer(3013, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3012)
+	-- Phase 3's MVP only has one seeded org in practice; synthesize a
+	-- second org id directly on the target's live record to exercise
+	-- the org-scoping check (the same live-table pattern already used
+	-- elsewhere in this suite, e.g. mutating PersonalMoney directly).
+	playerDataService:GetLoadedRecord(3013).OrgId = "a-different-organization"
+
+	local ok, reason = taskService:AssignTask(3012, 3013)
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "target player is not in your organization")
+end)
+
+testkit.test("SECURITY: assigning to a target who already has a task in progress is rejected (no duplicate assignment)", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3014, SeedOrganizations.DEFAULT_ORG_ID)
+	playerDataService:LoadPlayer(3015, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3014)
+
+	taskService:RequestTask(3015) -- target already has a pending self-requested task
+
+	local ok, reason = taskService:AssignTask(3014, 3015)
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "a task is already in progress")
+end)
+
+testkit.test("SECURITY: assigning twice in a row to the same target is rejected the second time", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3016, SeedOrganizations.DEFAULT_ORG_ID)
+	playerDataService:LoadPlayer(3017, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3016)
+
+	local firstOk = taskService:AssignTask(3016, 3017)
+	testkit.assertTrue(firstOk)
+
+	local secondOk, reason = taskService:AssignTask(3016, 3017)
+	testkit.assertFalse(secondOk)
+	testkit.assertEqual(reason, "a task is already in progress")
+end)
+
+testkit.test("SECURITY: malformed (non-number) targetUserId is rejected, not crashed on", function()
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3018, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3018)
+
+	local ok, reason = taskService:AssignTask(3018, { injected = true })
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "malformed request")
+end)
+
+testkit.test("SECURITY: AssignTask rate-limits rapid-fire calls", function()
+	local taskService, playerDataService = newHarness({ rateClockStep = 0 })
+	playerDataService:LoadPlayer(3019, SeedOrganizations.DEFAULT_ORG_ID)
+	playerDataService:LoadPlayer(3020, SeedOrganizations.DEFAULT_ORG_ID)
+	playerDataService:LoadPlayer(3021, SeedOrganizations.DEFAULT_ORG_ID)
+	promoteToManager(playerDataService, 3019)
+
+	local ok1 = taskService:AssignTask(3019, 3020)
+	testkit.assertTrue(ok1)
+
+	local ok2, reason2 = taskService:AssignTask(3019, 3021)
+	testkit.assertFalse(ok2)
+	testkit.assertEqual(reason2, "rate limited")
+end)
+
+testkit.test("SECURITY: an Associate cannot assign even by fabricating a Manager-shaped payload", function()
+	-- There is no field in AssignTask's signature for the caller to claim
+	-- "I am a Manager" - the rank is always re-read from the server-held
+	-- record for managerUserId, so passing extra arguments has no effect.
+	local taskService, playerDataService = newHarness()
+	playerDataService:LoadPlayer(3022, SeedOrganizations.DEFAULT_ORG_ID) -- Associate
+	playerDataService:LoadPlayer(3023, SeedOrganizations.DEFAULT_ORG_ID)
+
+	local ok, reason = taskService:AssignTask(3022, 3023, PlayerDataSchema.RANK.MANAGER, true)
+	testkit.assertFalse(ok)
+	testkit.assertEqual(reason, "only a Manager may assign tasks")
 end)

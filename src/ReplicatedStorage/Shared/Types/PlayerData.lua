@@ -31,12 +31,14 @@ PlayerDataSchema.SCHEMA_VERSION = 1
 -- (Economy Spec §5.1) only needs a recent window, not full history.
 PlayerDataSchema.MAX_HISTORY_LENGTH = 20
 
--- Only "Associate" is reachable in Phase 0 - no code path in Phase 0 ever
--- assigns Specialist/Manager/etc. The rest of the Progression Spec's
--- ladder is intentionally not enumerated here yet; adding it later is a
--- field/enum extension, not a schema migration.
+-- "Associate" and "Manager" are reachable as of Phase 3 (PromotionService).
+-- The rest of the Progression Spec's ladder (Specialist, Director, VP,
+-- Chief, Executive, CEO, Founder) is intentionally not enumerated here
+-- yet - adding it later is a field/enum extension, not a schema
+-- migration, per the "data model headroom, not feature stubs" principle.
 PlayerDataSchema.RANK = {
 	ASSOCIATE = "Associate",
+	MANAGER = "Manager",
 }
 
 --[[

@@ -23,11 +23,19 @@ local TaskInstance = {}
 
 --[[
 	Creates a new, pending (not completed) task instance.
+
+	`assignedBy` (optional, added in Phase 3): the userId of the Manager
+	who assigned this instance to its holder via TaskService:AssignTask,
+	or nil for a self-requested instance (the existing RequestTask path -
+	omitting this argument preserves Phase 1/2 callers' exact prior
+	behavior). This is server-set provenance only; TaskInstance never
+	trusts anything about who assigned an instance from client input.
 ]]
-function TaskInstance.New(taskId, instanceId, issuedAt)
+function TaskInstance.New(taskId, instanceId, issuedAt, assignedBy)
 	assert(type(taskId) == "string" and #taskId > 0, "taskId must be a non-empty string")
 	assert(type(instanceId) == "string" and #instanceId > 0, "instanceId must be a non-empty string")
 	assert(type(issuedAt) == "number", "issuedAt must be a number")
+	assert(assignedBy == nil or type(assignedBy) == "number", "assignedBy must be a number or nil")
 
 	return {
 		TaskId = taskId,
@@ -35,6 +43,7 @@ function TaskInstance.New(taskId, instanceId, issuedAt)
 		IssuedAt = issuedAt,
 		Completed = false,
 		CompletedAt = nil,
+		AssignedBy = assignedBy,
 	}
 end
 
