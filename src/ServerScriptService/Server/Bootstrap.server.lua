@@ -121,7 +121,10 @@ local function onPlayerAdded(player)
 	if not ok then
 		warn(
 			string.format(
-				"[Bootstrap] Failed to load data for %s (%d): %s",
+				"[Bootstrap] Failed to load data for %s (%d): %s. "
+					.. "In Studio, this usually means \"Studio Access to API Services\" "
+					.. "is disabled (Game Settings > Security) or the place has never been "
+					.. "published, both of which block DataStoreService.",
 				player.Name,
 				player.UserId,
 				tostring(resultOrErr)
